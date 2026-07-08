@@ -1,6 +1,5 @@
 fastapi
 uvicorn[standard]
 python-multipart
-sqlite3
 requests
 pytz
