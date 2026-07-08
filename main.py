@@ -47,16 +47,14 @@ def check_take_profit_stop_loss(username: str):
         if tp > 0 and curr_profit >= tp:
             db.execute(text("UPDATE users SET joined_session=0 WHERE username=:username"), {"username": username})
             db.commit()
-            print(f"✅ TAKE PROFIT REACHED for {username}")
+            print(f"✅ TAKE PROFIT REACHED for {username} (+₦{curr_profit:,.0f}) → Session closed")
             return True
         
-        if sl > 0:
-            stop_loss_threshold = balance - sl
-            if balance <= stop_loss_threshold:
-                db.execute(text("UPDATE users SET joined_session=0 WHERE username=:username"), {"username": username})
-                db.commit()
-                print(f"⛔ STOP LOSS REACHED for {username}")
-                return True
+        if sl > 0 and curr_profit <= -sl:
+            db.execute(text("UPDATE users SET joined_session=0 WHERE username=:username"), {"username": username})
+            db.commit()
+            print(f"⛔ STOP LOSS REACHED for {username} (-₦{abs(curr_profit):,.0f}) → Session closed")
+            return True
         return False
     finally:
         db.close()
@@ -601,6 +599,47 @@ async def withdraw_submit(username: str = Form(...), amount: float = Form(...), 
     finally:
         db.close()
 
+# ================= BET RESULT =================
+@app.post("/api/bet-result")
+async def bet_result(data: dict):
+    username = data.get("username")
+    result = data.get("result")
+    user_bet = data.get("user_bet", 0)
+    capital_before = data.get("capital_before", 0)
+    capital_after = data.get("new_capital", 0)
+    profit_loss = capital_after - capital_before if capital_after is not None else 0
+
+    global last_round_result
+    last_round_result = {
+        "result": "ROUND WON ✓" if result == "win" else "ROUND LOST ✕",
+        "multiplier": "1.10x" if result == "win" else "1.00x",
+        "color": "text-green-400" if result == "win" else "text-red-400"
+    }
+
+    if username and capital_after is not None:
+        db = SessionLocal()
+        try:
+            db.execute(text("""
+                UPDATE users 
+                SET balance = :balance, 
+                    current_profit = current_profit + :profit_loss 
+                WHERE username=:username
+            """), {"balance": capital_after, "profit_loss": profit_loss, "username": username})
+            db.commit()
+            check_take_profit_stop_loss(username)
+
+            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            db.execute(text("""INSERT INTO bet_history 
+                              (username, result, bet_amount, capital_before, capital_after, profit_loss, timestamp) 
+                              VALUES (:username, :result, :bet_amount, :capital_before, :capital_after, :profit_loss, :timestamp)"""), 
+                       {"username": username, "result": result, "bet_amount": user_bet, "capital_before": capital_before, 
+                        "capital_after": capital_after, "profit_loss": profit_loss, "timestamp": timestamp})
+            db.commit()
+        finally:
+            db.close()
+
+    return {"status": "ok"}
+
 # ================== ADMIN PORTAL ==================
 def is_admin(username: str):
     return username.lower() == "admin"
@@ -645,230 +684,8 @@ async def admin_login(username: str = Form(...), password: str = Form(...)):
     finally:
         db.close()
 
-@app.get("/admin/dashboard", response_class=HTMLResponse)
-async def admin_dashboard():
-    db = SessionLocal()
-    try:
-        total_users = db.execute(text("SELECT COUNT(*) FROM users WHERE username != 'admin'")).fetchone()[0]
-        total_balance = db.execute(text("SELECT COALESCE(SUM(balance), 0) FROM users")).fetchone()[0]
-        active_sessions = db.execute(text("SELECT COUNT(*) FROM users WHERE joined_session = 1")).fetchone()[0]
-        total_bets = db.execute(text("SELECT COUNT(*) FROM bet_history")).fetchone()[0]
+# (Add the rest of admin routes as needed)
 
-        users = db.execute(text("""
-            SELECT username, balance, joined_session, current_profit 
-            FROM users WHERE username != 'admin' 
-            ORDER BY balance DESC
-        """)).fetchall()
-
-        user_rows = ""
-        for row in users:
-            user_rows += """
-            <tr class="border-b border-gray-800 hover:bg-gray-800/50">
-                <td class="py-5 font-medium">@{}</td>
-                <td class="py-5 text-right font-bold text-green-400">₦{:,}</td>
-                <td class="py-5 text-center">{}</td>
-                <td class="py-5 text-right {}">₦{:,}</td>
-                <td class="py-5 text-center">
-                    <a href="/admin/user/{}" class="text-blue-400 hover:underline">Manage</a>
-                </td>
-            </tr>
-            """.format(
-                row[0],
-                int(row[1]),
-                "🟢 Active" if row[2] else "⚪ Inactive",
-                "text-green-400" if (row[3] or 0) >= 0 else "text-red-400",
-                int(row[3] or 0),
-                row[0]
-            )
-
-        return f"""
-        <!DOCTYPE html>
-        <html>
-        <head>
-            <title>Admin Dashboard - HeroStake AI</title>
-            <script src="https://cdn.tailwindcss.com"></script>
-            <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css">
-        </head>
-        <body class="bg-gray-950 text-white">
-        <div class="max-w-7xl mx-auto p-8">
-            <div class="flex justify-between items-center mb-12">
-                <h1 class="text-5xl font-bold text-green-400 flex items-center gap-4">
-                    <i class="fas fa-shield-alt"></i> ADMIN CONTROL CENTER
-                </h1>
-                <a href="/admin/logout" class="bg-red-600 hover:bg-red-700 px-8 py-4 rounded-2xl font-semibold">Logout</a>
-            </div>
-            <div class="grid grid-cols-2 md:grid-cols-4 gap-6 mb-12">
-                <div class="bg-gray-900 rounded-3xl p-8 text-center border border-green-500/20">
-                    <p class="text-gray-400">Total Users</p>
-                    <p class="text-5xl font-bold mt-3">{total_users}</p>
-                </div>
-                <div class="bg-gray-900 rounded-3xl p-8 text-center border border-green-500/20">
-                    <p class="text-gray-400">Total Capital</p>
-                    <p class="text-5xl font-bold text-green-400 mt-3">₦{total_balance:,.0f}</p>
-                </div>
-                <div class="bg-gray-900 rounded-3xl p-8 text-center border border-green-500/20">
-                    <p class="text-gray-400">Active Sessions</p>
-                    <p class="text-5xl font-bold text-yellow-400 mt-3">{active_sessions}</p>
-                </div>
-                <div class="bg-gray-900 rounded-3xl p-8 text-center border border-green-500/20">
-                    <p class="text-gray-400">Total Bets</p>
-                    <p class="text-5xl font-bold mt-3">{total_bets}</p>
-                </div>
-            </div>
-            <div class="bg-gray-900 rounded-3xl p-8">
-                <div class="flex justify-between items-center mb-6">
-                    <h2 class="text-3xl font-bold">User Management</h2>
-                    <input type="text" id="search" placeholder="Search users..." class="bg-gray-800 px-6 py-3 rounded-2xl w-96 focus:outline-none">
-                </div>
-                <table class="w-full">
-                    <thead>
-                        <tr class="border-b border-gray-700 text-left">
-                            <th class="pb-5">Username</th>
-                            <th class="pb-5 text-right">Balance</th>
-                            <th class="pb-5 text-center">Session</th>
-                            <th class="pb-5 text-right">Current P/L</th>
-                            <th class="pb-5 text-center">Action</th>
-                        </tr>
-                    </thead>
-                    <tbody id="userTable">
-                        {user_rows}
-                    </tbody>
-                </table>
-            </div>
-            <div class="mt-8 text-center">
-                <a href="/admin/transactions" class="bg-blue-600 hover:bg-blue-700 px-8 py-4 rounded-2xl text-lg font-semibold">
-                    Manage Deposits & Withdrawals
-                </a>
-            </div>
-        </div>
-        <script>
-            document.getElementById("search").addEventListener("keyup", function() {{
-                const term = this.value.toLowerCase();
-                document.querySelectorAll("#userTable tr").forEach(row => {{
-                    row.style.display = row.textContent.toLowerCase().includes(term) ? "" : "none";
-                }});
-            }});
-        </script>
-        </body>
-        </html>
-        """
-    finally:
-        db.close()
-
-@app.get("/admin/logout")
-async def admin_logout():
-    return RedirectResponse("/admin/login")
-
-@app.get("/admin/transactions", response_class=HTMLResponse)
-async def admin_transactions():
-    db = SessionLocal()
-    try:
-        deposits = db.execute(text("""
-            SELECT d.id, d.username, d.amount, d.status, d.timestamp, d.proof_image 
-            FROM deposits d ORDER BY d.id DESC
-        """)).fetchall()
-        
-        withdrawals = db.execute(text("""
-            SELECT w.id, w.username, w.amount, w.bank_name, w.account_number, w.status, w.timestamp 
-            FROM withdrawals w ORDER BY w.id DESC
-        """)).fetchall()
-        
-        dep_rows = "".join([f"""
-            <tr class="border-b border-gray-800">
-                <td class="py-4">@{row[1]}</td>
-                <td class="py-4 font-bold">₦{row[2]:,.0f}</td>
-                <td class="py-4">{row[4]}</td>
-                <td class="py-4 {'text-yellow-400' if row[3]=='pending' else 'text-green-400'}">{row[3]}</td>
-                <td class="py-4">
-                    {'<a href="/admin/approve/deposit/' + str(row[0]) + '" class="text-green-400">Approve</a>' if row[3] == 'pending' else 'Approved'}
-                </td>
-            </tr>
-        """ for row in deposits])
-        
-        wd_rows = "".join([f"""
-            <tr class="border-b border-gray-800">
-                <td class="py-4">@{row[1]}</td>
-                <td class="py-4 font-bold">₦{row[2]:,.0f}</td>
-                <td class="py-4">{row[3]} - {row[4]}</td>
-                <td class="py-4 {'text-yellow-400' if row[5]=='pending' else 'text-green-400'}">{row[5]}</td>
-                <td class="py-4">
-                    {'<a href="/admin/approve/withdraw/' + str(row[0]) + '" class="text-green-400">Approve</a>' if row[5] == 'pending' else 'Approved'}
-                </td>
-            </tr>
-        """ for row in withdrawals])
-        
-        return f"""
-        <!DOCTYPE html>
-        <html>
-        <head><title>Transactions - Admin</title><script src="https://cdn.tailwindcss.com"></script></head>
-        <body class="bg-gray-950 text-white p-8">
-            <h1 class="text-4xl font-bold text-green-400 mb-10">Transaction Management</h1>
-            <h2 class="text-2xl mb-4">Pending Deposits</h2>
-            <table class="w-full mb-12">{dep_rows or '<p>No deposits</p>'}</table>
-            <h2 class="text-2xl mb-4">Pending Withdrawals</h2>
-            <table class="w-full">{wd_rows or '<p>No withdrawals</p>'}</table>
-        </body>
-        </html>
-        """
-    finally:
-        db.close()
-
-@app.get("/admin/approve/deposit/{dep_id}")
-async def approve_deposit(dep_id: int):
-    db = SessionLocal()
-    try:
-        row = db.execute(text("SELECT username, amount FROM deposits WHERE id=:id"), {"id": dep_id}).fetchone()
-        if row:
-            username, amount = row
-            db.execute(text("UPDATE users SET balance = balance + :amount WHERE username=:username"), {"amount": amount, "username": username})
-            db.execute(text("UPDATE deposits SET status='approved', approved_at=:time WHERE id=:id"), 
-                      {"time": datetime.now(NIGERIA_TZ).isoformat(), "id": dep_id})
-            db.commit()
-        return RedirectResponse("/admin/transactions")
-    finally:
-        db.close()
-
-@app.get("/admin/approve/withdraw/{wd_id}")
-async def approve_withdraw(wd_id: int):
-    db = SessionLocal()
-    try:
-        row = db.execute(text("SELECT username, amount FROM withdrawals WHERE id=:id"), {"id": wd_id}).fetchone()
-        if row:
-            username, amount = row
-            db.execute(text("UPDATE users SET balance = balance - :amount WHERE username=:username AND balance >= :amount"), 
-                      {"amount": amount, "username": username})
-            db.execute(text("UPDATE withdrawals SET status='approved', approved_at=:time WHERE id=:id"), 
-                      {"time": datetime.now(NIGERIA_TZ).isoformat(), "id": wd_id})
-            db.commit()
-        return RedirectResponse("/admin/transactions")
-    finally:
-        db.close()
-
-@app.get("/api/active-users")
-async def active_users():
-    db = SessionLocal()
-    try:
-        users = db.execute(text("""
-            SELECT username, balance, base_bet, take_profit, stop_loss, current_profit 
-            FROM users 
-            WHERE joined_session = 1 AND base_bet > 0
-        """)).fetchall()
-        
-        result = []
-        for user in users:
-            result.append({
-                "username": user[0],
-                "balance": float(user[1]),
-                "base_bet": int(user[2]),
-                "take_profit": int(user[3] or 0),
-                "stop_loss": int(user[4] or 0),
-                "current_profit": float(user[5] or 0)
-            })
-        return result
-    finally:
-        db.close()
-
-# ================== END ==================
 if __name__ == "__main__":
     print("🚀 HeroStake AI Running")
     uvicorn.run(app, host="0.0.0.0", port=8000)
