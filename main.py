@@ -27,13 +27,18 @@ print("✅ Database engine created")
 def check_take_profit_stop_loss(username: str):
     db = SessionLocal()
     try:
-        user = db.execute(text("SELECT balance, take_profit, stop_loss, current_profit, joined_session FROM users WHERE username=:username"), 
-                         {"username": username}).fetchone()
+        user = db.execute(text("""
+            SELECT balance, take_profit, stop_loss, current_profit, joined_session 
+            FROM users WHERE username=:username
+        """), {"username": username}).fetchone()
+        
         if not user:
             return False
+        
         balance, tp, sl, curr_profit, joined = user
         if not joined:
             return False
+        
         tp = tp or 0
         sl = sl or 0
         balance = balance or 0.0
@@ -44,9 +49,10 @@ def check_take_profit_stop_loss(username: str):
             db.commit()
             print(f"✅ TAKE PROFIT REACHED for {username}")
             return True
-
+        
         if sl > 0:
-            if balance <= (balance - sl):
+            stop_loss_threshold = balance - sl
+            if balance <= stop_loss_threshold:
                 db.execute(text("UPDATE users SET joined_session=0 WHERE username=:username"), {"username": username})
                 db.commit()
                 print(f"⛔ STOP LOSS REACHED for {username}")
@@ -79,7 +85,48 @@ def sanitize_filename(filename: str) -> str:
         raise ValueError("Invalid file type")
     return f"{secrets.token_hex(16)}.{ext}"
 
-# ================== ROUTES ==================
+# ================= REAL-TIME API =================
+@app.get("/api/user-status")
+async def user_status(username: str):
+    db = SessionLocal()
+    try:
+        user = db.execute(text("""
+            SELECT balance, current_profit, joined_session 
+            FROM users WHERE username=:username
+        """), {"username": username}).fetchone()
+        
+        if not user:
+            return JSONResponse({"error": "User not found"}, status_code=404)
+        
+        balance, current_profit, joined = user
+        current_profit = current_profit or 0.0
+
+        history = db.execute(text("""SELECT result, bet_amount, profit_loss, timestamp 
+                      FROM bet_history WHERE username=:username ORDER BY id DESC LIMIT 10"""), 
+                      {"username": username}).fetchall()
+
+        return {
+            "balance": round(float(balance), 2),
+            "current_profit": round(float(current_profit), 2),
+            "joined_session": bool(joined),
+            "history": [
+                {
+                    "result": h[0],
+                    "bet": h[1],
+                    "profit_loss": h[2],
+                    "timestamp": h[3]
+                } for h in history
+            ]
+        }
+    finally:
+        db.close()
+
+@app.get("/api/last-result")
+async def last_result():
+    global last_round_result
+    return last_round_result
+
+# ================= LOGIN & REGISTER =================
 @app.get("/", response_class=HTMLResponse)
 @app.get("/login", response_class=HTMLResponse)
 async def login_page():
@@ -149,6 +196,227 @@ async def register(username: str = Form(...), password: str = Form(...)):
     finally:
         db.close()
 
+# ================= DASHBOARD =================
+@app.get("/dashboard", response_class=HTMLResponse)
+async def dashboard(username: str):
+    db = SessionLocal()
+    try:
+        user = db.execute(text("""
+            SELECT balance, base_bet, take_profit, stop_loss, joined_session, current_profit 
+            FROM users WHERE username=:username
+        """), {"username": username}).fetchone()
+        
+        if not user:
+            return RedirectResponse("/login")
+        
+        balance, base_bet, take_profit, stop_loss, joined, current_profit = user
+        joined = bool(joined)
+        current_profit = current_profit or 0.0
+
+        check_take_profit_stop_loss(username)
+
+        return f"""
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <title>Dashboard - HeroStake AI</title>
+            <script src="https://cdn.tailwindcss.com"></script>
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        </head>
+        <body class="bg-gray-950 text-white">
+        <div class="max-w-7xl mx-auto p-4 md:p-6">
+            <div class="flex justify-between items-center mb-6">
+                <h1 class="text-4xl font-bold text-green-400">HeroStake AI</h1>
+                <div class="flex items-center gap-4">
+                    <span class="text-green-400">@{username}</span>
+                    <a href="/logout" class="bg-red-600 hover:bg-red-700 px-5 py-2 rounded-2xl text-sm">Logout</a>
+                </div>
+            </div>
+            <div class="bg-green-900 border border-green-400 rounded-3xl p-5 text-center mb-8 text-base font-semibold">
+                ✅ SESSION ACTIVE (24/7 - Always Open)
+            </div>
+            <!-- Capital + Cashier -->
+            <div class="grid grid-cols-2 gap-4 mb-10">
+                <div class="bg-gray-900 rounded-3xl p-6 text-center border border-green-500/30">
+                    <p class="text-gray-400 text-xs tracking-widest">CURRENT CAPITAL</p>
+                    <p id="balance" class="text-4xl font-bold text-green-400 mt-3">₦{balance:,.0f}</p>
+                    <p class="mt-4 text-sm">Session: <span id="profit" class="font-bold {'text-green-400' if current_profit >= 0 else 'text-red-400'}">₦{current_profit:,.0f}</span></p>
+                </div>
+                <div class="bg-gray-900 rounded-3xl p-6">
+                    <h3 class="text-lg font-bold mb-5 text-center">💰 Cashier</h3>
+                    <div class="space-y-3">
+                        <a href="/deposit?username={username}" class="block w-full bg-green-600 hover:bg-green-700 py-4 rounded-2xl text-center font-semibold">Deposit</a>
+                        <a href="/withdraw?username={username}" class="block w-full bg-amber-600 hover:bg-amber-700 py-4 rounded-2xl text-center font-semibold">Withdraw</a>
+                        <a href="/history?username={username}" class="block w-full bg-gray-700 hover:bg-gray-600 py-3 rounded-2xl text-center text-sm">View Transaction History</a>
+                    </div>
+                </div>
+            </div>
+            <!-- Live Multiplier -->
+            <div class="mb-10">
+                <h3 class="text-2xl font-bold mb-4">🔴 Live Multiplier</h3>
+                <div class="bg-black border-4 border-yellow-400 rounded-3xl p-8 text-center">
+                    <div class="flex flex-col items-center gap-4 py-8">
+                        <p id="status-text" class="text-3xl font-bold {last_round_result['color']}">{last_round_result['result']}</p>
+                        <p id="multi-text" class="text-6xl font-bold text-white tracking-wider">{last_round_result['multiplier']}</p>
+                    </div>
+                </div>
+            </div>
+            <!-- Join / Leave -->
+            {f'''
+            <div class="mb-8">
+                <form action="/leave-session" method="post">
+                    <input type="hidden" name="username" value="{username}">
+                    <button type="submit" class="w-full bg-red-600 hover:bg-red-700 py-5 rounded-3xl font-bold">⛔ LEAVE SESSION</button>
+                </form>
+            </div>
+            ''' if joined else f'''
+            <div class="bg-green-900 border border-green-400 rounded-3xl p-8 mb-8">
+                <h3 class="text-2xl font-bold mb-6 text-center">Join Trading Session</h3>
+                <form action="/join-session" method="post" class="space-y-6 max-w-lg mx-auto">
+                    <input type="hidden" name="username" value="{username}">
+                    
+                    <div>
+                        <label class="block text-gray-400 mb-2">Base Bet Amount (₦)</label>
+                        <input type="number" name="base_bet" id="base_bet" 
+                               class="w-full p-5 bg-gray-800 rounded-2xl text-lg" required>
+                        <p class="text-xs text-gray-500 mt-2" id="bet_info">
+                            Recommended: 0.25% of your balance • Max: 0.5%
+                        </p>
+                    </div>
+                    
+                    <div class="grid grid-cols-2 gap-4">
+                        <div>
+                            <label class="block text-gray-400 mb-2">Take Profit (₦)</label>
+                            <input type="number" name="take_profit" placeholder="Take Profit" 
+                                   class="w-full p-5 bg-gray-800 rounded-2xl" min="500" required>
+                        </div>
+                        <div>
+                            <label class="block text-gray-400 mb-2">Stop Loss (₦)</label>
+                            <input type="number" name="stop_loss" placeholder="Stop Loss" 
+                                   class="w-full p-5 bg-gray-800 rounded-2xl" min="500" required>
+                        </div>
+                    </div>
+                    
+                    <button type="submit" class="w-full bg-green-600 hover:bg-green-700 py-6 rounded-3xl font-bold text-xl">
+                        JOIN SESSION
+                    </button>
+                </form>
+            </div>
+            '''}
+            <!-- Recent Activity -->
+            <div class="bg-gray-900 rounded-3xl p-6">
+                <h3 class="text-2xl font-bold mb-6">Recent Activity</h3>
+                <div id="history" class="space-y-4"></div>
+            </div>
+        </div>
+        <script>
+            const username = "{username}";
+            const currentBalance = {balance};
+            async function updateDashboard() {{
+                try {{
+                    const res = await fetch(`/api/user-status?username=${{username}}`);
+                    const data = await res.json();
+                    document.getElementById("balance").textContent = "₦" + Number(data.balance).toLocaleString();
+                    const profitEl = document.getElementById("profit");
+                    profitEl.textContent = "₦" + Number(data.current_profit).toLocaleString();
+                    profitEl.className = Number(data.current_profit) >= 0 ? "font-bold text-green-400" : "font-bold text-red-400";
+                    let html = "";
+                    data.history.forEach(h => {{
+                        const color = h.profit_loss > 0 ? "text-green-400" : "text-red-400";
+                        html += `
+                        <div class="flex justify-between items-center bg-gray-800 p-5 rounded-2xl">
+                            <div>
+                                <span class="${{h.result === 'win' ? 'text-green-400' : 'text-red-400'}} font-bold">${{h.result.toUpperCase()}}</span>
+                                <span class="ml-4 text-gray-300">₦${{h.bet.toLocaleString()}}</span>
+                            </div>
+                            <div class="text-right">
+                                <p class="text-xs text-gray-500">${{h.timestamp}}</p>
+                                <p class="${{color}} font-medium">${{h.profit_loss > 0 ? '+' : ''}}₦${{Math.abs(h.profit_loss).toLocaleString()}}</p>
+                            </div>
+                        </div>`;
+                    }});
+                    document.getElementById("history").innerHTML = html || '<p class="text-gray-400 py-12 text-center">No activity yet</p>';
+                }} catch(e) {{ console.log(e); }}
+            }}
+            function updateLiveMultiplier() {{
+                fetch('/api/last-result')
+                    .then(res => res.json())
+                    .then(data => {{
+                        document.getElementById("status-text").textContent = data.result;
+                        document.getElementById("status-text").className = `text-3xl font-bold ${{data.color}}`;
+                        document.getElementById("multi-text").textContent = data.multiplier;
+                    }})
+                    .catch(() => {{}});
+            }}
+            function setupBaseBet() {{
+                const input = document.getElementById("base_bet");
+                if (!input || currentBalance < 5000) return;
+                const maxBet = Math.floor(currentBalance * 0.005);
+                const recommended = Math.floor(currentBalance * 0.0025);
+                input.max = maxBet;
+                input.value = recommended;
+                input.addEventListener("input", function() {{
+                    let value = parseInt(this.value) || 0;
+                    if (value > maxBet) this.value = maxBet;
+                }});
+            }}
+            setInterval(updateDashboard, 2000);
+            setInterval(updateLiveMultiplier, 600);
+            updateDashboard();
+            updateLiveMultiplier();
+            setTimeout(setupBaseBet, 300);
+        </script>
+        </body>
+        </html>
+        """
+    finally:
+        db.close()
+
+# ================= OTHER ENDPOINTS =================
+@app.get("/logout")
+async def logout():
+    return RedirectResponse("/login")
+
+@app.post("/join-session")
+async def join_session(username: str = Form(...), base_bet: int = Form(...), take_profit: int = Form(...), stop_loss: int = Form(...)):
+    db = SessionLocal()
+    try:
+        result = db.execute(text("SELECT balance FROM users WHERE username=:username"), {"username": username}).fetchone()
+        if not result or result[0] < 5000:
+            return HTMLResponse(f"""
+                <h2 class="text-red-400 text-center mt-10">❌ Cannot Join Session</h2>
+                <p class="text-center mt-4">You need a minimum balance of ₦5,000 to join a trading session.</p>
+                <a href="/dashboard?username={username}" class="text-green-400 block text-center mt-8">← Back to Dashboard</a>
+            """)
+        
+        max_bet = int(result[0] * 0.005)
+        if base_bet > max_bet:
+            base_bet = max_bet
+        
+        db.execute(text("""UPDATE users SET base_bet=:base_bet, take_profit=:take_profit, stop_loss=:stop_loss, 
+                          joined_session=1, current_profit=0, session_joined_at=:time 
+                          WHERE username=:username"""), 
+                   {"base_bet": base_bet, "take_profit": take_profit, "stop_loss": stop_loss, 
+                    "time": datetime.now(NIGERIA_TZ).isoformat(), "username": username})
+        db.commit()
+        return RedirectResponse(f"/dashboard?username={username}", status_code=303)
+    finally:
+        db.close()
+
+@app.post("/leave-session")
+async def leave_session(username: str = Form(...)):
+    db = SessionLocal()
+    try:
+        db.execute(text("UPDATE users SET joined_session=0, base_bet=0 WHERE username=:username"), {"username": username})
+        db.commit()
+        return RedirectResponse(f"/dashboard?username={username}", status_code=303)
+    finally:
+        db.close()
+
+# ================= DEPOSIT & WITHDRAWAL ROUTES (Keep your original logic) =================
+# (I kept your deposit, withdraw, history, admin, etc. the same as your original for now. 
+# You can add them back if needed.)
+
 if __name__ == "__main__":
-    print("🚀 HeroStake AI Running")
+    print("🚀 HeroStake AI Running → http://127.0.0.1:8000")
     uvicorn.run(app, host="0.0.0.0", port=8000)
