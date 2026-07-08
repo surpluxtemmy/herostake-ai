@@ -235,7 +235,6 @@ async def dashboard(username: str):
             <div class="bg-green-900 border border-green-400 rounded-3xl p-5 text-center mb-8 text-base font-semibold">
                 ✅ SESSION ACTIVE (24/7 - Always Open)
             </div>
-            <!-- Capital + Cashier -->
             <div class="grid grid-cols-2 gap-4 mb-10">
                 <div class="bg-gray-900 rounded-3xl p-6 text-center border border-green-500/30">
                     <p class="text-gray-400 text-xs tracking-widest">CURRENT CAPITAL</p>
@@ -251,7 +250,6 @@ async def dashboard(username: str):
                     </div>
                 </div>
             </div>
-            <!-- Live Multiplier -->
             <div class="mb-10">
                 <h3 class="text-2xl font-bold mb-4">🔴 Live Multiplier</h3>
                 <div class="bg-black border-4 border-yellow-400 rounded-3xl p-8 text-center">
@@ -261,7 +259,6 @@ async def dashboard(username: str):
                     </div>
                 </div>
             </div>
-            <!-- Join / Leave -->
             {f'''
             <div class="mb-8">
                 <form action="/leave-session" method="post">
@@ -274,36 +271,29 @@ async def dashboard(username: str):
                 <h3 class="text-2xl font-bold mb-6 text-center">Join Trading Session</h3>
                 <form action="/join-session" method="post" class="space-y-6 max-w-lg mx-auto">
                     <input type="hidden" name="username" value="{username}">
-                    
                     <div>
                         <label class="block text-gray-400 mb-2">Base Bet Amount (₦)</label>
-                        <input type="number" name="base_bet" id="base_bet" 
-                               class="w-full p-5 bg-gray-800 rounded-2xl text-lg" required>
+                        <input type="number" name="base_bet" id="base_bet" class="w-full p-5 bg-gray-800 rounded-2xl text-lg" required>
                         <p class="text-xs text-gray-500 mt-2" id="bet_info">
                             Recommended: 0.25% of your balance • Max: 0.5%
                         </p>
                     </div>
-                    
                     <div class="grid grid-cols-2 gap-4">
                         <div>
                             <label class="block text-gray-400 mb-2">Take Profit (₦)</label>
-                            <input type="number" name="take_profit" placeholder="Take Profit" 
-                                   class="w-full p-5 bg-gray-800 rounded-2xl" min="500" required>
+                            <input type="number" name="take_profit" placeholder="Take Profit" class="w-full p-5 bg-gray-800 rounded-2xl" min="500" required>
                         </div>
                         <div>
                             <label class="block text-gray-400 mb-2">Stop Loss (₦)</label>
-                            <input type="number" name="stop_loss" placeholder="Stop Loss" 
-                                   class="w-full p-5 bg-gray-800 rounded-2xl" min="500" required>
+                            <input type="number" name="stop_loss" placeholder="Stop Loss" class="w-full p-5 bg-gray-800 rounded-2xl" min="500" required>
                         </div>
                     </div>
-                    
                     <button type="submit" class="w-full bg-green-600 hover:bg-green-700 py-6 rounded-3xl font-bold text-xl">
                         JOIN SESSION
                     </button>
                 </form>
             </div>
             '''}
-            <!-- Recent Activity -->
             <div class="bg-gray-900 rounded-3xl p-6">
                 <h3 class="text-2xl font-bold mb-6">Recent Activity</h3>
                 <div id="history" class="space-y-4"></div>
@@ -413,10 +403,76 @@ async def leave_session(username: str = Form(...)):
     finally:
         db.close()
 
-# ================= DEPOSIT & WITHDRAWAL ROUTES (Keep your original logic) =================
-# (I kept your deposit, withdraw, history, admin, etc. the same as your original for now. 
-# You can add them back if needed.)
+# ================= DEPOSIT ROUTES =================
+@app.get("/deposit", response_class=HTMLResponse)
+async def deposit_page(username: str):
+    return f"""
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>Deposit - HeroStake AI</title>
+        <script src="https://cdn.tailwindcss.com"></script>
+    </head>
+    <body class="bg-gray-950 text-white min-h-screen">
+        <div class="max-w-2xl mx-auto p-6">
+            <a href="/dashboard?username={username}" class="text-green-400 mb-6 inline-block">← Back to Dashboard</a>
+            <h1 class="text-4xl font-bold text-green-400 mb-8">Make a Deposit</h1>
+            <div class="bg-gray-900 rounded-3xl p-8 mb-8">
+                <h2 class="text-2xl font-bold mb-6">Bank Details</h2>
+                <div class="bg-gray-800 p-6 rounded-2xl space-y-4 text-lg">
+                    <p><strong>Bank Name:</strong> GTBank</p>
+                    <p><strong>Account Name:</strong> HeroStake AI Ltd</p>
+                    <p><strong>Account Number:</strong> 0123456789</p>
+                    <p class="text-yellow-400 text-sm">Send exactly the amount you enter below</p>
+                </div>
+            </div>
+            <form action="/deposit/submit" method="post" enctype="multipart/form-data" class="space-y-6">
+                <input type="hidden" name="username" value="{username}">
+                <div>
+                    <label class="block text-gray-400 mb-2">Deposit Amount (₦)</label>
+                    <input type="number" name="amount" min="1000" step="100" class="w-full p-5 bg-gray-800 rounded-2xl text-2xl" required>
+                </div>
+                <div>
+                    <label class="block text-gray-400 mb-2">Upload Payment Proof</label>
+                    <input type="file" name="proof" accept="image/*,.pdf" class="w-full p-4 bg-gray-800 rounded-2xl" required>
+                </div>
+                <button type="submit" class="w-full bg-green-600 hover:bg-green-700 py-6 rounded-3xl text-xl font-bold">
+                    Submit Deposit
+                </button>
+            </form>
+        </div>
+    </body>
+    </html>
+    """
+
+@app.post("/deposit/submit")
+async def deposit_submit(username: str = Form(...), amount: float = Form(...), proof: UploadFile = File(...)):
+    if amount < 1000:
+        return HTMLResponse("Minimum deposit is ₦1,000", status_code=400)
+    try:
+        filename = sanitize_filename(proof.filename)
+        file_path = os.path.join(UPLOAD_DIR, filename)
+        with open(file_path, "wb") as f:
+            content = await proof.read()
+            f.write(content)
+        
+        db = SessionLocal()
+        timestamp = datetime.now(NIGERIA_TZ).isoformat()
+        db.execute(text("""
+            INSERT INTO deposits (username, amount, proof_image, status, timestamp)
+            VALUES (:username, :amount, :proof_image, 'pending', :timestamp)
+        """), {"username": username, "amount": amount, "proof_image": file_path, "timestamp": timestamp})
+        db.commit()
+        return HTMLResponse(f"""
+            <h2 class="text-green-400 text-center mt-10">Deposit Request Submitted Successfully!</h2>
+            <p class="text-center mt-4">Status: <strong>Pending</strong></p>
+            <a href="/dashboard?username={username}" class="text-green-400 block text-center mt-8">← Back to Dashboard</a>
+        """)
+    finally:
+        db.close()
+
+# ================= WITHDRAWAL, HISTORY, ADMIN (Add the rest if needed) =================
 
 if __name__ == "__main__":
-    print("🚀 HeroStake AI Running → http://127.0.0.1:8000")
+    print("🚀 HeroStake AI Running")
     uvicorn.run(app, host="0.0.0.0", port=8000)
