@@ -471,8 +471,380 @@ async def deposit_submit(username: str = Form(...), amount: float = Form(...), p
     finally:
         db.close()
 
-# ================= WITHDRAWAL, HISTORY, ADMIN (Add the rest if needed) =================
+# ================= TRANSACTION HISTORY =================
+@app.get("/history", response_class=HTMLResponse)
+async def transaction_history(username: str):
+    db = SessionLocal()
+    try:
+        deposits = db.execute(text("""
+            SELECT 'Deposit' as type, amount, status, timestamp 
+            FROM deposits WHERE username=:username 
+        """), {"username": username}).fetchall()
+        
+        withdrawals = db.execute(text("""
+            SELECT 'Withdrawal' as type, amount, status, timestamp 
+            FROM withdrawals WHERE username=:username 
+        """), {"username": username}).fetchall()
+        
+        all_transactions = []
+        for d in deposits:
+            all_transactions.append((*d, 'green'))
+        for w in withdrawals:
+            all_transactions.append((*w, 'amber'))
+        
+        all_transactions.sort(key=lambda x: x[3], reverse=True)
+        
+        rows = ""
+        for tx in all_transactions:
+            tx_type, amount, status, timestamp, color = tx
+            status_color = "text-yellow-400" if status == "pending" else "text-green-400"
+            sign = "+" if tx_type == "Deposit" else "-"
+            
+            rows += f"""
+            <div class="flex justify-between items-center bg-gray-800 p-5 rounded-2xl">
+                <div>
+                    <p class="font-bold { 'text-green-400' if tx_type == 'Deposit' else 'text-amber-400'}">
+                        {sign} ₦{amount:,.0f}
+                    </p>
+                    <p class="text-xs text-gray-500">{timestamp}</p>
+                </div>
+                <div class="text-right">
+                    <span class="font-semibold { 'text-green-400' if tx_type == 'Deposit' else 'text-amber-400'}">{tx_type}</span><br>
+                    <span class="{status_color} text-sm">{status.upper()}</span>
+                </div>
+            </div>
+            """
+        
+        return f"""
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <title>Transaction History - HeroStake AI</title>
+            <script src="https://cdn.tailwindcss.com"></script>
+        </head>
+        <body class="bg-gray-950 text-white p-6">
+            <div class="max-w-2xl mx-auto">
+                <a href="/dashboard?username={username}" class="text-green-400 mb-6 inline-block">← Back to Dashboard</a>
+                <h1 class="text-3xl font-bold text-green-400 mb-8">Transaction History</h1>
+                <div class="space-y-4">
+                    {rows or '<p class="text-gray-400 text-center py-12">No transactions yet</p>'}
+                </div>
+            </div>
+        </body>
+        </html>
+        """
+    finally:
+        db.close()
 
+# ================= WITHDRAWAL ROUTES =================
+@app.get("/withdraw", response_class=HTMLResponse)
+async def withdraw_page(username: str):
+    return f"""
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>Withdraw - HeroStake AI</title>
+        <script src="https://cdn.tailwindcss.com"></script>
+    </head>
+    <body class="bg-gray-950 text-white min-h-screen">
+        <div class="max-w-2xl mx-auto p-6">
+            <a href="/dashboard?username={username}" class="text-green-400 mb-6 inline-block">← Back to Dashboard</a>
+            <h1 class="text-4xl font-bold text-amber-400 mb-8">Request Withdrawal</h1>
+            <form action="/withdraw/submit" method="post" class="bg-gray-900 p-8 rounded-3xl space-y-6">
+                <input type="hidden" name="username" value="{username}">
+                <div>
+                    <label class="block text-gray-400 mb-2">Amount (₦)</label>
+                    <input type="number" name="amount" min="2000" step="100" class="w-full p-5 bg-gray-800 rounded-2xl text-2xl" required>
+                </div>
+                <div>
+                    <label class="block text-gray-400 mb-2">Bank Name</label>
+                    <input type="text" name="bank_name" required class="w-full p-5 bg-gray-800 rounded-2xl">
+                </div>
+                <div>
+                    <label class="block text-gray-400 mb-2">Account Number</label>
+                    <input type="text" name="account_number" required class="w-full p-5 bg-gray-800 rounded-2xl">
+                </div>
+                <div>
+                    <label class="block text-gray-400 mb-2">Account Name</label>
+                    <input type="text" name="account_name" required class="w-full p-5 bg-gray-800 rounded-2xl">
+                </div>
+                <button type="submit" class="w-full bg-amber-600 hover:bg-amber-700 py-6 rounded-3xl text-xl font-bold">
+                    Submit Withdrawal Request
+                </button>
+            </form>
+        </div>
+    </body>
+    </html>
+    """
+
+@app.post("/withdraw/submit")
+async def withdraw_submit(username: str = Form(...), amount: float = Form(...), bank_name: str = Form(...), account_number: str = Form(...), account_name: str = Form(...)):
+    balance = get_user_balance(username)
+    if amount > balance:
+        return HTMLResponse("Insufficient balance", status_code=400)
+    if amount < 2000:
+        return HTMLResponse("Minimum withdrawal is ₦2,000", status_code=400)
+    
+    db = SessionLocal()
+    try:
+        timestamp = datetime.now(NIGERIA_TZ).isoformat()
+        db.execute(text("""
+            INSERT INTO withdrawals (username, amount, bank_name, account_number, account_name, status, timestamp)
+            VALUES (:username, :amount, :bank_name, :account_number, :account_name, 'pending', :timestamp)
+        """), {"username": username, "amount": amount, "bank_name": bank_name, "account_number": account_number, "account_name": account_name, "timestamp": timestamp})
+        db.commit()
+        return HTMLResponse(f"""
+            <h2 class="text-amber-400 text-center mt-10">Withdrawal Request Submitted!</h2>
+            <p class="text-center mt-4">Status: <strong>Pending Approval</strong></p>
+            <a href="/dashboard?username={username}" class="text-green-400 block text-center mt-8">← Back to Dashboard</a>
+        """)
+    finally:
+        db.close()
+
+# ================== ADMIN PORTAL ==================
+def is_admin(username: str):
+    return username.lower() == "admin"
+
+@app.get("/admin/login", response_class=HTMLResponse)
+async def admin_login_page():
+    return """
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>Admin Login - HeroStake AI</title>
+        <script src="https://cdn.tailwindcss.com"></script>
+        <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css">
+    </head>
+    <body class="bg-gray-950 text-white min-h-screen flex items-center justify-center">
+        <div class="bg-gray-900 p-12 rounded-3xl w-full max-w-md border border-green-500/30">
+            <div class="flex justify-center mb-6">
+                <i class="fas fa-shield-alt text-7xl text-green-400"></i>
+            </div>
+            <h1 class="text-5xl font-bold text-center text-green-400 mb-2">Admin Portal</h1>
+            <p class="text-center text-gray-400 mb-10">HeroStake AI Control Center</p>
+            <form action="/admin/login" method="post" class="space-y-6">
+                <input type="text" name="username" value="admin" placeholder="Username" class="w-full p-5 bg-gray-800 rounded-2xl text-lg" required>
+                <input type="password" name="password" value="admin123" placeholder="Password" class="w-full p-5 bg-gray-800 rounded-2xl text-lg" required>
+                <button type="submit" class="w-full bg-green-600 hover:bg-green-700 py-6 rounded-2xl text-xl font-bold">
+                    ENTER CONTROL ROOM
+                </button>
+            </form>
+        </div>
+    </body>
+    </html>
+    """
+
+@app.post("/admin/login")
+async def admin_login(username: str = Form(...), password: str = Form(...)):
+    db = SessionLocal()
+    try:
+        result = db.execute(text("SELECT password FROM users WHERE username=:username"), {"username": username}).fetchone()
+        if result and result[0] == password and is_admin(username):
+            return RedirectResponse("/admin/dashboard", status_code=303)
+        return HTMLResponse("Invalid admin credentials. <a href='/admin/login' class='text-green-400'>Try again</a>")
+    finally:
+        db.close()
+
+@app.get("/admin/dashboard", response_class=HTMLResponse)
+async def admin_dashboard():
+    db = SessionLocal()
+    try:
+        total_users = db.execute(text("SELECT COUNT(*) FROM users WHERE username != 'admin'")).fetchone()[0]
+        total_balance = db.execute(text("SELECT COALESCE(SUM(balance), 0) FROM users")).fetchone()[0]
+        active_sessions = db.execute(text("SELECT COUNT(*) FROM users WHERE joined_session = 1")).fetchone()[0]
+        total_bets = db.execute(text("SELECT COUNT(*) FROM bet_history")).fetchone()[0]
+
+        users = db.execute(text("""
+            SELECT username, balance, joined_session, current_profit 
+            FROM users WHERE username != 'admin' 
+            ORDER BY balance DESC
+        """)).fetchall()
+
+        user_rows = ""
+        for row in users:
+            user_rows += """
+            <tr class="border-b border-gray-800 hover:bg-gray-800/50">
+                <td class="py-5 font-medium">@{}</td>
+                <td class="py-5 text-right font-bold text-green-400">₦{:,}</td>
+                <td class="py-5 text-center">{}</td>
+                <td class="py-5 text-right {}">₦{:,}</td>
+                <td class="py-5 text-center">
+                    <a href="/admin/user/{}" class="text-blue-400 hover:underline">Manage</a>
+                </td>
+            </tr>
+            """.format(
+                row[0],
+                int(row[1]),
+                "🟢 Active" if row[2] else "⚪ Inactive",
+                "text-green-400" if (row[3] or 0) >= 0 else "text-red-400",
+                int(row[3] or 0),
+                row[0]
+            )
+
+        return f"""
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <title>Admin Dashboard - HeroStake AI</title>
+            <script src="https://cdn.tailwindcss.com"></script>
+            <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css">
+        </head>
+        <body class="bg-gray-950 text-white">
+        <div class="max-w-7xl mx-auto p-8">
+            <div class="flex justify-between items-center mb-12">
+                <h1 class="text-5xl font-bold text-green-400 flex items-center gap-4">
+                    <i class="fas fa-shield-alt"></i> ADMIN CONTROL CENTER
+                </h1>
+                <a href="/admin/logout" class="bg-red-600 hover:bg-red-700 px-8 py-4 rounded-2xl font-semibold">Logout</a>
+            </div>
+            <div class="grid grid-cols-2 md:grid-cols-4 gap-6 mb-12">
+                <div class="bg-gray-900 rounded-3xl p-8 text-center border border-green-500/20">
+                    <p class="text-gray-400">Total Users</p>
+                    <p class="text-5xl font-bold mt-3">{total_users}</p>
+                </div>
+                <div class="bg-gray-900 rounded-3xl p-8 text-center border border-green-500/20">
+                    <p class="text-gray-400">Total Capital</p>
+                    <p class="text-5xl font-bold text-green-400 mt-3">₦{total_balance:,.0f}</p>
+                </div>
+                <div class="bg-gray-900 rounded-3xl p-8 text-center border border-green-500/20">
+                    <p class="text-gray-400">Active Sessions</p>
+                    <p class="text-5xl font-bold text-yellow-400 mt-3">{active_sessions}</p>
+                </div>
+                <div class="bg-gray-900 rounded-3xl p-8 text-center border border-green-500/20">
+                    <p class="text-gray-400">Total Bets</p>
+                    <p class="text-5xl font-bold mt-3">{total_bets}</p>
+                </div>
+            </div>
+            <div class="bg-gray-900 rounded-3xl p-8">
+                <div class="flex justify-between items-center mb-6">
+                    <h2 class="text-3xl font-bold">User Management</h2>
+                    <input type="text" id="search" placeholder="Search users..." class="bg-gray-800 px-6 py-3 rounded-2xl w-96 focus:outline-none">
+                </div>
+                <table class="w-full">
+                    <thead>
+                        <tr class="border-b border-gray-700 text-left">
+                            <th class="pb-5">Username</th>
+                            <th class="pb-5 text-right">Balance</th>
+                            <th class="pb-5 text-center">Session</th>
+                            <th class="pb-5 text-right">Current P/L</th>
+                            <th class="pb-5 text-center">Action</th>
+                        </tr>
+                    </thead>
+                    <tbody id="userTable">
+                        {user_rows}
+                    </tbody>
+                </table>
+            </div>
+            <div class="mt-8 text-center">
+                <a href="/admin/transactions" class="bg-blue-600 hover:bg-blue-700 px-8 py-4 rounded-2xl text-lg font-semibold">
+                    Manage Deposits & Withdrawals
+                </a>
+            </div>
+        </div>
+        <script>
+            document.getElementById("search").addEventListener("keyup", function() {{
+                const term = this.value.toLowerCase();
+                document.querySelectorAll("#userTable tr").forEach(row => {{
+                    row.style.display = row.textContent.toLowerCase().includes(term) ? "" : "none";
+                }});
+            }});
+        </script>
+        </body>
+        </html>
+        """
+    finally:
+        db.close()
+
+@app.get("/admin/logout")
+async def admin_logout():
+    return RedirectResponse("/admin/login")
+
+@app.get("/admin/transactions", response_class=HTMLResponse)
+async def admin_transactions():
+    db = SessionLocal()
+    try:
+        deposits = db.execute(text("""
+            SELECT d.id, d.username, d.amount, d.status, d.timestamp, d.proof_image 
+            FROM deposits d ORDER BY d.id DESC
+        """)).fetchall()
+        
+        withdrawals = db.execute(text("""
+            SELECT w.id, w.username, w.amount, w.bank_name, w.account_number, w.status, w.timestamp 
+            FROM withdrawals w ORDER BY w.id DESC
+        """)).fetchall()
+        
+        dep_rows = "".join([f"""
+            <tr class="border-b border-gray-800">
+                <td class="py-4">@{row[1]}</td>
+                <td class="py-4 font-bold">₦{row[2]:,.0f}</td>
+                <td class="py-4">{row[4]}</td>
+                <td class="py-4 {'text-yellow-400' if row[3]=='pending' else 'text-green-400'}">{row[3]}</td>
+                <td class="py-4">
+                    {'<a href="/admin/approve/deposit/' + str(row[0]) + '" class="text-green-400">Approve</a>' if row[3] == 'pending' else 'Approved'}
+                </td>
+            </tr>
+        """ for row in deposits])
+        
+        wd_rows = "".join([f"""
+            <tr class="border-b border-gray-800">
+                <td class="py-4">@{row[1]}</td>
+                <td class="py-4 font-bold">₦{row[2]:,.0f}</td>
+                <td class="py-4">{row[3]} - {row[4]}</td>
+                <td class="py-4 {'text-yellow-400' if row[5]=='pending' else 'text-green-400'}">{row[5]}</td>
+                <td class="py-4">
+                    {'<a href="/admin/approve/withdraw/' + str(row[0]) + '" class="text-green-400">Approve</a>' if row[5] == 'pending' else 'Approved'}
+                </td>
+            </tr>
+        """ for row in withdrawals])
+        
+        return f"""
+        <!DOCTYPE html>
+        <html>
+        <head><title>Transactions - Admin</title><script src="https://cdn.tailwindcss.com"></script></head>
+        <body class="bg-gray-950 text-white p-8">
+            <h1 class="text-4xl font-bold text-green-400 mb-10">Transaction Management</h1>
+            <h2 class="text-2xl mb-4">Pending Deposits</h2>
+            <table class="w-full mb-12">{dep_rows or '<p>No deposits</p>'}</table>
+            <h2 class="text-2xl mb-4">Pending Withdrawals</h2>
+            <table class="w-full">{wd_rows or '<p>No withdrawals</p>'}</table>
+        </body>
+        </html>
+        """
+    finally:
+        db.close()
+
+@app.get("/admin/approve/deposit/{dep_id}")
+async def approve_deposit(dep_id: int):
+    db = SessionLocal()
+    try:
+        row = db.execute(text("SELECT username, amount FROM deposits WHERE id=:id"), {"id": dep_id}).fetchone()
+        if row:
+            username, amount = row
+            db.execute(text("UPDATE users SET balance = balance + :amount WHERE username=:username"), {"amount": amount, "username": username})
+            db.execute(text("UPDATE deposits SET status='approved', approved_at=:time WHERE id=:id"), 
+                      {"time": datetime.now(NIGERIA_TZ).isoformat(), "id": dep_id})
+            db.commit()
+        return RedirectResponse("/admin/transactions")
+    finally:
+        db.close()
+
+@app.get("/admin/approve/withdraw/{wd_id}")
+async def approve_withdraw(wd_id: int):
+    db = SessionLocal()
+    try:
+        row = db.execute(text("SELECT username, amount FROM withdrawals WHERE id=:id"), {"id": wd_id}).fetchone()
+        if row:
+            username, amount = row
+            db.execute(text("UPDATE users SET balance = balance - :amount WHERE username=:username AND balance >= :amount"), 
+                      {"amount": amount, "username": username})
+            db.execute(text("UPDATE withdrawals SET status='approved', approved_at=:time WHERE id=:id"), 
+                      {"time": datetime.now(NIGERIA_TZ).isoformat(), "id": wd_id})
+            db.commit()
+        return RedirectResponse("/admin/transactions")
+    finally:
+        db.close()
+
+# ================== END ==================
 if __name__ == "__main__":
     print("🚀 HeroStake AI Running")
     uvicorn.run(app, host="0.0.0.0", port=8000)
