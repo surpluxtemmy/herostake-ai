@@ -600,6 +600,8 @@ async def withdraw_submit(username: str = Form(...), amount: float = Form(...), 
         db.close()
 
 # ================= BET RESULT =================
+import random
+
 @app.post("/api/bet-result")
 async def bet_result(data: dict):
     username = data.get("username")
@@ -610,10 +612,20 @@ async def bet_result(data: dict):
     profit_loss = capital_after - capital_before if capital_after is not None else 0
 
     global last_round_result
+
+    if result == "win":
+        multiplier = "1.9x"
+        color = "text-green-400"
+    else:
+        # Random loss multiplier between 1.00x - 1.89x
+        loss_mult = round(random.uniform(1.00, 1.89), 2)
+        multiplier = f"{loss_mult}x"
+        color = "text-red-400"
+
     last_round_result = {
         "result": "ROUND WON ✓" if result == "win" else "ROUND LOST ✕",
-        "multiplier": "1.10x" if result == "win" else "1.00x",
-        "color": "text-green-400" if result == "win" else "text-red-400"
+        "multiplier": multiplier,
+        "color": color
     }
 
     if username and capital_after is not None:
@@ -632,8 +644,9 @@ async def bet_result(data: dict):
             db.execute(text("""INSERT INTO bet_history 
                               (username, result, bet_amount, capital_before, capital_after, profit_loss, timestamp) 
                               VALUES (:username, :result, :bet_amount, :capital_before, :capital_after, :profit_loss, :timestamp)"""), 
-                       {"username": username, "result": result, "bet_amount": user_bet, "capital_before": capital_before, 
-                        "capital_after": capital_after, "profit_loss": profit_loss, "timestamp": timestamp})
+                       {"username": username, "result": result, "bet_amount": user_bet, 
+                        "capital_before": capital_before, "capital_after": capital_after, 
+                        "profit_loss": profit_loss, "timestamp": timestamp})
             db.commit()
         finally:
             db.close()
