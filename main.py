@@ -684,7 +684,33 @@ async def admin_login(username: str = Form(...), password: str = Form(...)):
     finally:
         db.close()
 
+
+
+@app.get("/api/active-users")
+async def active_users():
+    db = SessionLocal()
+    try:
+        users = db.execute(text("""
+            SELECT username, balance, base_bet, take_profit, stop_loss, current_profit 
+            FROM users 
+            WHERE joined_session = 1 AND base_bet > 0
+        """)).fetchall()
+        
+        result = []
+        for user in users:
+            result.append({
+                "username": user[0],
+                "balance": float(user[1]),
+                "base_bet": int(user[2]),
+                "take_profit": int(user[3] or 0),
+                "stop_loss": int(user[4] or 0),
+                "current_profit": float(user[5] or 0)
+            })
+        return result
+    finally:
+        db.close()
 # (Add the rest of admin routes as needed)
+
 
 if __name__ == "__main__":
     print("🚀 HeroStake AI Running")
