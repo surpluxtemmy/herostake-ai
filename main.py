@@ -717,8 +717,6 @@ async def active_users():
         return result
     finally:
         db.close()
-
-       
 # (Add the rest of admin routes as needed)
 if **name** == "**main**":
     print("🚀 HeroStake AI Running")
