@@ -700,6 +700,31 @@ async def admin_login(username: str = Form(...), password: str = Form(...)):
         db.close()
 
 
+@app.get("/api/active-users")
+async def active_users():
+    db = SessionLocal()
+    try:
+        users = db.execute(text("""
+            SELECT username, balance, base_bet, take_profit, stop_loss, current_profit
+            FROM users
+            WHERE joined_session = 1 AND base_bet > 0
+        """)).fetchall()
+       
+        result = []
+        for user in users:
+            result.append({
+                "username": user[0],
+                "balance": float(user[1]),
+                "base_bet": int(user[2]),
+                "take_profit": int(user[3] or 0),
+                "stop_loss": int(user[4] or 0),
+                "current_profit": float(user[5] or 0)
+            })
+        return result
+    finally:
+        db.close()
+
+
 @app.get("/admin/dashboard", response_class=HTMLResponse)
 async def admin_dashboard():
     db = SessionLocal()
@@ -768,6 +793,7 @@ async def admin_dashboard():
             </div>
 
             <div class="grid grid-cols-1 lg:grid-cols-2 gap-8">
+                <!-- Active Users -->
                 <div>
                     <h2 class="text-2xl font-bold mb-6">Active Trading Sessions</h2>
                     <div class="space-y-4">
@@ -775,6 +801,7 @@ async def admin_dashboard():
                     </div>
                 </div>
 
+                <!-- Pending Deposits -->
                 <div>
                     <h2 class="text-2xl font-bold mb-6">Pending Deposits</h2>
                     <div class="space-y-4">
@@ -785,11 +812,9 @@ async def admin_dashboard():
                                     <span class="font-bold">@{d[1]}</span> — ₦{float(d[2]):,.0f}
                                     <p class="text-xs text-gray-500">{d[4]}</p>
                                 </div>
-                                <a href="/admin/approve-deposit/{d[0]}" 
-                                   class="bg-green-600 hover:bg-green-700 px-6 py-3 rounded-2xl text-sm">Approve</a>
+                                <a href="/admin/approve-deposit/{d[0]}" class="bg-green-600 hover:bg-green-700 px-6 py-3 rounded-2xl text-sm">Approve</a>
                             </div>
-                            <a href="/static/uploads/{os.path.basename(str(d[3]))}" target="_blank" 
-                               class="text-green-400 text-sm mt-3 inline-block">📎 View Proof</a>
+                            <a href="/static/uploads/{os.path.basename(str(d[3]))}" target="_blank" class="text-green-400 text-sm mt-3 inline-block">📎 View Proof</a>
                         </div>
                         ''' for d in pending_deposits) or '<p class="text-gray-400 py-12 text-center">No pending deposits</p>'}
                     </div>
@@ -798,7 +823,7 @@ async def admin_dashboard():
 
             <!-- Manual Bet Result -->
             <div class="mt-10 bg-gray-900 rounded-3xl p-8">
-                <h2 class="text-2xl font-bold mb-6">Manual Round Result (Admin)</h2>
+                <h2 class="text-2xl font-bold mb-6">🎮 Manual Round Result (Admin Override)</h2>
                 <form action="/admin/manual-bet-result" method="post" class="grid grid-cols-1 md:grid-cols-3 gap-6">
                     <div>
                         <label class="block text-gray-400 mb-2">Username</label>
@@ -815,7 +840,7 @@ async def admin_dashboard():
                         <label class="block text-gray-400 mb-2">Bet Amount (₦)</label>
                         <input type="number" name="bet_amount" value="500" class="w-full p-5 bg-gray-800 rounded-2xl" required>
                     </div>
-                    <button type="submit" class="md:col-span-3 bg-green-600 hover:bg-green-700 py-6 rounded-3xl font-bold text-xl mt-4">
+                    <button type="submit" class="md:col-span-3 bg-green-600 hover:bg-green-700 py-6 rounded-3xl font-bold text-xl">
                         Submit Result
                     </button>
                 </form>
@@ -843,12 +868,10 @@ async def admin_leave_user(username: str = Form(...)):
 async def approve_deposit(deposit_id: int):
     db = SessionLocal()
     try:
-        dep = db.execute(text("SELECT username, amount FROM deposits WHERE id=:id AND status='pending'"), 
-                        {"id": deposit_id}).fetchone()
+        dep = db.execute(text("SELECT username, amount FROM deposits WHERE id=:id AND status='pending'"), {"id": deposit_id}).fetchone()
         if dep:
             username, amount = dep
-            db.execute(text("UPDATE users SET balance = balance + :amount WHERE username=:username"), 
-                      {"amount": amount, "username": username})
+            db.execute(text("UPDATE users SET balance = balance + :amount WHERE username=:username"), {"amount": amount, "username": username})
             db.execute(text("UPDATE deposits SET status='approved' WHERE id=:id"), {"id": deposit_id})
             db.commit()
         return RedirectResponse("/admin/dashboard", status_code=303)
