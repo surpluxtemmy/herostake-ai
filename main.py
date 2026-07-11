@@ -655,69 +655,223 @@ async def bet_result(data: dict):
 
 # ================== ADMIN PORTAL ==================
 def is_admin(username: str):
-    return username.lower() == "admin"
+    return username.lower() == "admin"
+
+
 @app.get("/admin/login", response_class=HTMLResponse)
 async def admin_login_page():
-    return """
-    <!DOCTYPE html>
-    <html>
-    <head>
-        <title>Admin Login - HeroStake AI</title>
-        <script src="https://cdn.tailwindcss.com"></script>
-        <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css">
-    </head>
-    <body class="bg-gray-950 text-white min-h-screen flex items-center justify-center">
-        <div class="bg-gray-900 p-12 rounded-3xl w-full max-w-md border border-green-500/30">
-            <div class="flex justify-center mb-6">
-                <i class="fas fa-shield-alt text-7xl text-green-400"></i>
-            </div>
-            <h1 class="text-5xl font-bold text-center text-green-400 mb-2">Admin Portal</h1>
-            <p class="text-center text-gray-400 mb-10">HeroStake AI Control Center</p>
-            <form action="/admin/login" method="post" class="space-y-6">
-                <input type="text" name="username" value="admin" placeholder="Username" class="w-full p-5 bg-gray-800 rounded-2xl text-lg" required>
-                <input type="password" name="password" value="admin123" placeholder="Password" class="w-full p-5 bg-gray-800 rounded-2xl text-lg" required>
-                <button type="submit" class="w-full bg-green-600 hover:bg-green-700 py-6 rounded-2xl text-xl font-bold">
-                    ENTER CONTROL ROOM
-                </button>
-            </form>
-        </div>
-    </body>
-    </html>
-    """
+    return """
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>Admin Login - HeroStake AI</title>
+        <script src="https://cdn.tailwindcss.com"></script>
+        <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css">
+    </head>
+    <body class="bg-gray-950 text-white min-h-screen flex items-center justify-center">
+        <div class="bg-gray-900 p-12 rounded-3xl w-full max-w-md border border-green-500/30">
+            <div class="flex justify-center mb-6">
+                <i class="fas fa-shield-alt text-7xl text-green-400"></i>
+            </div>
+            <h1 class="text-5xl font-bold text-center text-green-400 mb-2">Admin Portal</h1>
+            <p class="text-center text-gray-400 mb-10">HeroStake AI Control Center</p>
+            <form action="/admin/login" method="post" class="space-y-6">
+                <input type="text" name="username" value="admin" placeholder="Username" class="w-full p-5 bg-gray-800 rounded-2xl text-lg" required>
+                <input type="password" name="password" value="admin123" placeholder="Password" class="w-full p-5 bg-gray-800 rounded-2xl text-lg" required>
+                <button type="submit" class="w-full bg-green-600 hover:bg-green-700 py-6 rounded-2xl text-xl font-bold">
+                    ENTER CONTROL ROOM
+                </button>
+            </form>
+        </div>
+    </body>
+    </html>
+    """
+
+
 @app.post("/admin/login")
 async def admin_login(username: str = Form(...), password: str = Form(...)):
-    db = SessionLocal()
-    try:
-        result = db.execute(text("SELECT password FROM users WHERE username=:username"), {"username": username}).fetchone()
-        if result and result[0] == password and is_admin(username):
-            return RedirectResponse("/admin/dashboard", status_code=303)
-        return HTMLResponse("Invalid admin credentials. <a href='/admin/login' class='text-green-400'>Try again</a>")
-    finally:
-        db.close()
-@app.get("/api/active-users")
-async def active_users():
-    db = SessionLocal()
-    try:
-        users = db.execute(text("""
-            SELECT username, balance, base_bet, take_profit, stop_loss, current_profit
-            FROM users
-            WHERE joined_session = 1 AND base_bet > 0
-        """)).fetchall()
-       
-        result = []
-        for user in users:
-            result.append({
-                "username": user[0],
-                "balance": float(user[1]),
-                "base_bet": int(user[2]),
-                "take_profit": int(user[3] or 0),
-                "stop_loss": int(user[4] or 0),
-                "current_profit": float(user[5] or 0)
-            })
-        return result
-    finally:
-        db.close()
-# (Add the rest of admin routes as needed)
-if **name** == "**main**":
-    print("🚀 HeroStake AI Running")
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    db = SessionLocal()
+    try:
+        result = db.execute(text("SELECT password FROM users WHERE username=:username"), {"username": username}).fetchone()
+        if result and result[0] == password and is_admin(username):
+            return RedirectResponse("/admin/dashboard", status_code=303)
+        return HTMLResponse("Invalid admin credentials. <a href='/admin/login' class='text-green-400'>Try again</a>")
+    finally:
+        db.close()
+
+
+@app.get("/admin/dashboard", response_class=HTMLResponse)
+async def admin_dashboard():
+    db = SessionLocal()
+    try:
+        active_users = db.execute(text("""
+            SELECT username, balance, base_bet, take_profit, stop_loss, current_profit, session_joined_at
+            FROM users WHERE joined_session = 1
+        """)).fetchall()
+
+        pending_deposits = db.execute(text("""
+            SELECT id, username, amount, proof_image, timestamp 
+            FROM deposits WHERE status = 'pending'
+        """)).fetchall()
+
+        pending_withdrawals = db.execute(text("""
+            SELECT id, username, amount, bank_name, account_number, account_name, timestamp 
+            FROM withdrawals WHERE status = 'pending'
+        """)).fetchall()
+
+        active_html = ""
+        for u in active_users:
+            active_html += f"""
+            <div class="bg-gray-800 p-5 rounded-2xl flex justify-between items-center">
+                <div>
+                    <span class="font-bold text-green-400">@{u[0]}</span><br>
+                    <span class="text-sm text-gray-400">Balance: ₦{float(u[1]):,.0f} | Bet: ₦{u[2]}</span>
+                </div>
+                <div class="text-right text-sm">
+                    TP: ₦{u[3] or 0} | SL: ₦{u[4] or 0}<br>
+                    <span class="text-yellow-400">Profit: ₦{float(u[5] or 0):,.0f}</span>
+                </div>
+                <form action="/admin/leave-user" method="post" class="ml-4">
+                    <input type="hidden" name="username" value="{u[0]}">
+                    <button type="submit" class="bg-red-600 hover:bg-red-700 px-4 py-2 rounded-xl text-sm">Leave</button>
+                </form>
+            </div>"""
+
+        return f"""
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <title>Admin Dashboard - HeroStake AI</title>
+            <script src="https://cdn.tailwindcss.com"></script>
+            <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css">
+        </head>
+        <body class="bg-gray-950 text-white">
+        <div class="max-w-7xl mx-auto p-6">
+            <div class="flex justify-between items-center mb-8">
+                <h1 class="text-4xl font-bold text-green-400">🛡️ Admin Control Center</h1>
+                <a href="/logout" class="bg-red-600 hover:bg-red-700 px-6 py-3 rounded-2xl">Logout</a>
+            </div>
+
+            <div class="grid grid-cols-1 md:grid-cols-3 gap-6 mb-10">
+                <div class="bg-gray-900 p-6 rounded-3xl text-center border border-green-500/30">
+                    <p class="text-5xl font-bold text-green-400">{len(active_users)}</p>
+                    <p class="text-gray-400 mt-2">Active Traders</p>
+                </div>
+                <div class="bg-gray-900 p-6 rounded-3xl text-center border border-yellow-500/30">
+                    <p class="text-5xl font-bold text-yellow-400">{len(pending_deposits)}</p>
+                    <p class="text-gray-400 mt-2">Pending Deposits</p>
+                </div>
+                <div class="bg-gray-900 p-6 rounded-3xl text-center border border-amber-500/30">
+                    <p class="text-5xl font-bold text-amber-400">{len(pending_withdrawals)}</p>
+                    <p class="text-gray-400 mt-2">Pending Withdrawals</p>
+                </div>
+            </div>
+
+            <div class="grid grid-cols-1 lg:grid-cols-2 gap-8">
+                <div>
+                    <h2 class="text-2xl font-bold mb-6">Active Trading Sessions</h2>
+                    <div class="space-y-4">
+                        {active_html or '<p class="text-gray-400 text-center py-12">No active users yet</p>'}
+                    </div>
+                </div>
+
+                <div>
+                    <h2 class="text-2xl font-bold mb-6">Pending Deposits</h2>
+                    <div class="space-y-4">
+                        {''.join(f'''
+                        <div class="bg-gray-900 p-6 rounded-3xl">
+                            <div class="flex justify-between items-center">
+                                <div>
+                                    <span class="font-bold">@{d[1]}</span> — ₦{float(d[2]):,.0f}
+                                    <p class="text-xs text-gray-500">{d[4]}</p>
+                                </div>
+                                <a href="/admin/approve-deposit/{d[0]}" 
+                                   class="bg-green-600 hover:bg-green-700 px-6 py-3 rounded-2xl text-sm">Approve</a>
+                            </div>
+                            <a href="/static/uploads/{os.path.basename(str(d[3]))}" target="_blank" 
+                               class="text-green-400 text-sm mt-3 inline-block">📎 View Proof</a>
+                        </div>
+                        ''' for d in pending_deposits) or '<p class="text-gray-400 py-12 text-center">No pending deposits</p>'}
+                    </div>
+                </div>
+            </div>
+
+            <!-- Manual Bet Result -->
+            <div class="mt-10 bg-gray-900 rounded-3xl p-8">
+                <h2 class="text-2xl font-bold mb-6">Manual Round Result (Admin)</h2>
+                <form action="/admin/manual-bet-result" method="post" class="grid grid-cols-1 md:grid-cols-3 gap-6">
+                    <div>
+                        <label class="block text-gray-400 mb-2">Username</label>
+                        <input type="text" name="username" class="w-full p-5 bg-gray-800 rounded-2xl" required>
+                    </div>
+                    <div>
+                        <label class="block text-gray-400 mb-2">Result</label>
+                        <select name="result" class="w-full p-5 bg-gray-800 rounded-2xl">
+                            <option value="win">Win (1.9x)</option>
+                            <option value="loss">Loss</option>
+                        </select>
+                    </div>
+                    <div>
+                        <label class="block text-gray-400 mb-2">Bet Amount (₦)</label>
+                        <input type="number" name="bet_amount" value="500" class="w-full p-5 bg-gray-800 rounded-2xl" required>
+                    </div>
+                    <button type="submit" class="md:col-span-3 bg-green-600 hover:bg-green-700 py-6 rounded-3xl font-bold text-xl mt-4">
+                        Submit Result
+                    </button>
+                </form>
+            </div>
+        </div>
+        </body>
+        </html>
+        """
+    finally:
+        db.close()
+
+
+@app.post("/admin/leave-user")
+async def admin_leave_user(username: str = Form(...)):
+    db = SessionLocal()
+    try:
+        db.execute(text("UPDATE users SET joined_session=0, base_bet=0 WHERE username=:username"), {"username": username})
+        db.commit()
+        return RedirectResponse("/admin/dashboard", status_code=303)
+    finally:
+        db.close()
+
+
+@app.get("/admin/approve-deposit/{deposit_id}")
+async def approve_deposit(deposit_id: int):
+    db = SessionLocal()
+    try:
+        dep = db.execute(text("SELECT username, amount FROM deposits WHERE id=:id AND status='pending'"), 
+                        {"id": deposit_id}).fetchone()
+        if dep:
+            username, amount = dep
+            db.execute(text("UPDATE users SET balance = balance + :amount WHERE username=:username"), 
+                      {"amount": amount, "username": username})
+            db.execute(text("UPDATE deposits SET status='approved' WHERE id=:id"), {"id": deposit_id})
+            db.commit()
+        return RedirectResponse("/admin/dashboard", status_code=303)
+    finally:
+        db.close()
+
+
+@app.post("/admin/manual-bet-result")
+async def manual_bet_result(username: str = Form(...), result: str = Form(...), bet_amount: float = Form(...)):
+    capital_before = get_user_balance(username)
+    new_capital = capital_before + (bet_amount * 0.9) if result == "win" else capital_before - bet_amount
+    
+    await bet_result({
+        "username": username,
+        "result": result,
+        "user_bet": bet_amount,
+        "capital_before": capital_before,
+        "new_capital": new_capital
+    })
+    return RedirectResponse("/admin/dashboard", status_code=303)
+
+
+# ================= FINAL BLOCK =================
+if __name__ == "__main__":
+    print("🚀 HeroStake AI Running with Admin Dashboard")
+    uvicorn.run(app, host="0.0.0.0", port=8000)
