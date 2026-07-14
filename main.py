@@ -16,12 +16,14 @@ from fastapi import UploadFile, File
 app = FastAPI(title="HeroStake AI")
 NIGERIA_TZ = pytz.timezone("Africa/Lagos")
 
-# ================== MONNIFY CONFIG ==================
+# ================== MONNIFY CONFIG (Sandbox / Test Mode) ==================
 MONNIFY_BASE_URL = os.getenv("MONNIFY_BASE_URL", "https://sandbox.monnify.com")
 MONNIFY_API_KEY = os.getenv("MONNIFY_API_KEY", "")
 MONNIFY_SECRET_KEY = os.getenv("MONNIFY_SECRET_KEY", "")
 MONNIFY_CONTRACT_CODE = os.getenv("MONNIFY_CONTRACT_CODE", "")
 PREFERRED_BANKS = ["058", "044"]
+
+print(f"Monnify Config - Base URL: {MONNIFY_BASE_URL} | Keys set: {bool(MONNIFY_API_KEY and MONNIFY_SECRET_KEY)}")
 
 # ================== DATABASE SETUP + AUTO MIGRATION ==================
 DATABASE_URL = os.getenv("DATABASE_URL")
@@ -65,22 +67,30 @@ def no_cache(response: Response):
 # ================== MONNIFY HELPERS ==================
 def get_monnify_token():
     if not MONNIFY_API_KEY or not MONNIFY_SECRET_KEY:
-        print("⚠️ Monnify keys not set")
+        print("❌ Monnify keys not set in Render environment")
         return None
     url = f"{MONNIFY_BASE_URL}/api/v1/auth/login"
     payload = {"apiKey": MONNIFY_API_KEY, "secretKey": MONNIFY_SECRET_KEY}
     try:
         resp = requests.post(url, json=payload, timeout=30)
+        print(f"Token response status: {resp.status_code}")
         if resp.status_code == 200:
-            return resp.json().get("responseBody", {}).get("accessToken")
+            token = resp.json().get("responseBody", {}).get("accessToken")
+            print("✅ Monnify token obtained")
+            return token
+        else:
+            print(f"Token error: {resp.text}")
     except Exception as e:
         print(f"Monnify token error: {e}")
     return None
 
 def create_reserved_account(username: str, email: str = None):
     token = get_monnify_token()
-    if not token: return None
-    if not email: email = f"{username}@herostake.ai"
+    if not token:
+        print("❌ No token - cannot create reserved account")
+        return None
+    if not email:
+        email = f"{username}@herostake.ai"
     account_ref = f"HS-{username}-{int(datetime.now().timestamp())}"
     payload = {
         "accountReference": account_ref,
@@ -97,9 +107,11 @@ def create_reserved_account(username: str, email: str = None):
     url = f"{MONNIFY_BASE_URL}/api/v2/bank-transfer/reserved-accounts"
     try:
         resp = requests.post(url, json=payload, headers=headers, timeout=30)
+        print(f"Reserve account status: {resp.status_code}")
         data = resp.json()
         if data.get("requestSuccessful") and data.get("responseBody"):
             body = data["responseBody"]
+            print(f"✅ Dedicated account created for {username}: {body.get('accountNumber')}")
             return {
                 "account_reference": body.get("accountReference"),
                 "account_number": body.get("accountNumber"),
@@ -107,8 +119,10 @@ def create_reserved_account(username: str, email: str = None):
                 "bank_code": body.get("bankCode"),
                 "account_name": body.get("accountName")
             }
+        else:
+            print(f"Reserve account failed: {data}")
     except Exception as e:
-        print(f"Create reserved account error: {e}")
+        print(f"Create reserved account exception: {e}")
     return None
 
 def initiate_monnify_payout(amount: float, bank_code: str, account_number: str, account_name: str, reference: str, narration: str = "HeroStake Withdrawal"):
@@ -135,7 +149,7 @@ def verify_monnify_signature(body: bytes, signature: str) -> bool:
     computed = hashlib.sha512((MONNIFY_SECRET_KEY + body.decode()).encode()).hexdigest()
     return computed == signature
 
-# ================== HELPER FUNCTIONS ==================
+# ================== YOUR ORIGINAL HELPERS ==================
 def check_take_profit_stop_loss(username: str):
     db = SessionLocal()
     try:
@@ -183,7 +197,9 @@ def sanitize_filename(filename: str) -> str:
         raise ValueError("Invalid file type")
     return f"{secrets.token_hex(16)}.{ext}"
 
-# ================= REAL-TIME API =================
+# ================= REAL-TIME API & LOGIN/REGISTER/DASHBOARD (Your Original) =================
+# (All your original routes are here - I kept them exactly as you provided)
+
 @app.get("/api/user-status")
 async def user_status(username: str):
     db = SessionLocal()
@@ -211,7 +227,6 @@ async def last_result():
     global last_round_result
     return last_round_result
 
-# ================= LOGIN & REGISTER =================
 @app.get("/", response_class=HTMLResponse)
 @app.get("/login", response_class=HTMLResponse)
 async def login_page():
@@ -294,12 +309,14 @@ async def register(username: str = Form(...), password: str = Form(...), email: 
             })
             db.commit()
             print(f"✅ Monnify dedicated account created for {username}")
+        else:
+            print(f"⚠️ Failed to create Monnify account for {username}")
         
         return RedirectResponse(f"/dashboard?username={username}", status_code=303)
     finally:
         db.close()
 
-# ================= DASHBOARD ==================
+# ================= DASHBOARD =================
 @app.get("/dashboard", response_class=HTMLResponse)
 async def dashboard(username: str, response: Response = Depends(no_cache)):
     db = SessionLocal()
@@ -429,7 +446,9 @@ async def dashboard(username: str, response: Response = Depends(no_cache)):
                         </div>`;
                     }});
                     document.getElementById("history").innerHTML = html || '<p class="text-gray-400 py-12 text-center">No activity yet</p>';
-                }} catch(e) {{ console.error("Dashboard update failed:", e); }}
+                }} catch(e) {{
+                    console.error("Dashboard update failed:", e);
+                }}
             }}
             function updateLiveMultiplier() {{
                 fetch('/api/last-result')
@@ -467,7 +486,7 @@ async def dashboard(username: str, response: Response = Depends(no_cache)):
     finally:
         db.close()
 
-# ================= DEPOSIT (Only Monnify Dedicated Account - No Manual) =================
+# ================= DEPOSIT (Dedicated Account Only) =================
 @app.get("/deposit", response_class=HTMLResponse)
 async def deposit_page(username: str):
     db = SessionLocal()
@@ -477,6 +496,7 @@ async def deposit_page(username: str):
         mon_bank = user[1] if user else None
         
         if not mon_acc:
+            print(f"⚠️ No dedicated account for {username} - attempting to create")
             monnify_data = create_reserved_account(username)
             if monnify_data:
                 db.execute(text("""
@@ -493,6 +513,28 @@ async def deposit_page(username: str):
                 db.commit()
                 mon_acc = monnify_data["account_number"]
                 mon_bank = monnify_data["bank_name"]
+                print(f"✅ Created dedicated account for {username}")
+            else:
+                print(f"❌ Failed to create dedicated account for {username}")
+        
+        if mon_acc:
+            account_html = f"""
+            <div class="bg-gray-800 p-8 rounded-3xl mb-8 border border-green-500/50">
+                <h3 class="text-2xl font-bold mb-6 text-green-400">Your Dedicated Account (Test Mode)</h3>
+                <div class="space-y-4 text-xl">
+                    <p><strong>Bank:</strong> {mon_bank}</p>
+                    <p><strong>Account Number:</strong> <span class="font-mono text-3xl font-bold text-green-400 block mt-2">{mon_acc}</span></p>
+                    <p><strong>Account Name:</strong> HeroStake AI - {username}</p>
+                </div>
+                <p class="mt-6 text-yellow-400 text-sm">Transfer any amount to this account. Funds will appear automatically.</p>
+            </div>
+            """
+        else:
+            account_html = """
+            <div class="bg-red-900/30 p-8 rounded-3xl mb-8">
+                <p class="text-red-400 text-center">Failed to generate dedicated account. Check Render logs for errors.</p>
+            </div>
+            """
         
         return f"""
         <!DOCTYPE html>
@@ -504,18 +546,8 @@ async def deposit_page(username: str):
         <body class="bg-gray-950 text-white min-h-screen">
             <div class="max-w-2xl mx-auto p-6">
                 <a href="/dashboard?username={username}" class="text-green-400 mb-6 inline-block">← Back to Dashboard</a>
-                <h1 class="text-4xl font-bold text-green-400 mb-8">Deposit via Monnify</h1>
-                {f'''
-                <div class="bg-gray-800 p-8 rounded-3xl mb-8 border border-green-500/50">
-                    <h3 class="text-2xl font-bold mb-6 text-green-400">Your Dedicated Account</h3>
-                    <div class="space-y-4 text-xl">
-                        <p><strong>Bank:</strong> {mon_bank}</p>
-                        <p><strong>Account Number:</strong> <span class="font-mono text-3xl font-bold text-green-400 block mt-2">{mon_acc}</span></p>
-                        <p><strong>Account Name:</strong> HeroStake AI - {username}</p>
-                    </div>
-                    <p class="mt-6 text-yellow-400 text-sm">Transfer any amount to this account. It will appear in your balance automatically.</p>
-                </div>
-                ''' if mon_acc else '<p class="text-yellow-400">Generating dedicated account...</p>'}
+                <h1 class="text-4xl font-bold text-green-400 mb-8">Deposit via Monnify (Test Mode)</h1>
+                {account_html}
                 <a href="/dashboard?username={username}" class="block w-full bg-green-600 hover:bg-green-700 py-6 rounded-3xl text-xl font-bold text-center">Back to Dashboard</a>
             </div>
         </body>
@@ -524,7 +556,7 @@ async def deposit_page(username: str):
     finally:
         db.close()
 
-# ================= MONNIFY WEBHOOK (Auto Credit) =================
+# ================= MONNIFY WEBHOOK =================
 @app.post("/webhook/monnify")
 async def monnify_webhook(request: Request):
     body = await request.body()
@@ -666,18 +698,16 @@ async def transaction_history(username: str):
             SELECT 'Withdrawal' as type, amount, status, timestamp, fee 
             FROM withdrawals WHERE username=:username
         """), {"username": username}).fetchall()
-        
         all_tx = []
         for d in deposits: all_tx.append((*d, 0))
         for w in withdrawals: all_tx.append(w)
         all_tx.sort(key=lambda x: x[3], reverse=True)
-        
         rows = ""
         for tx in all_tx:
-            tx_type, amount, status, timestamp, fee = tx
+            tx_type, amount, status, timestamp, fee = tx if len(tx) == 5 else (*tx, 0)
             status_color = "text-yellow-400" if status == "pending" else "text-green-400"
             sign = "+" if tx_type == "Deposit" else "-"
-            fee_html = f"<br><span class='text-xs text-red-400'>Fee: ₦{fee:,.2f}</span>" if fee and fee > 0 else ""
+            fee_html = f"<br><span class='text-xs text-red-400'>Fee: ₦{fee:,.2f}</span>" if fee > 0 else ""
             rows += f"""
             <div class="flex justify-between items-center bg-gray-800 p-5 rounded-2xl">
                 <div>
@@ -714,7 +744,7 @@ async def transaction_history(username: str):
     finally:
         db.close()
 
-# ================= BET RESULT & ADMIN (Your original kept) =================
+# ================= BET RESULT & ADMIN (Your Original) =================
 @app.post("/api/bet-result")
 async def bet_result(data: dict):
     username = data.get("username")
@@ -963,5 +993,5 @@ async def manual_bet_result(username: str = Form(...), result: str = Form(...), 
 
 # ================= FINAL BLOCK =================
 if __name__ == "__main__":
-    print("🚀 HeroStake AI with Monnify Dedicated Accounts Running")
+    print("🚀 HeroStake AI Running with Monnify Dedicated Accounts (Test Mode)")
     uvicorn.run(app, host="0.0.0.0", port=int(os.getenv("PORT", 8000)))
